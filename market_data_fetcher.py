@@ -7,11 +7,14 @@ import asyncio
 import aiohttp
 import pandas as pd
 import yfinance as yf
+import requests
+import requests_cache  # For caching HTTP requests
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, AsyncGenerator
+from typing import List, Dict, Optional, AsyncGenerator, Union
 import logging
 import json
 import random
+import os
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -35,18 +38,34 @@ class MarketDataFetcher:
     """Main class for fetching market data from NSE & BSE"""
     
     def __init__(self):
+        # Create cache directory if it doesn't exist
+        os.makedirs('.cache', exist_ok=True)
+        
+        # Install the requests cache
+        # This will cache all HTTP requests to reduce rate limiting issues
+        requests_cache.install_cache(
+            '.cache/market_data_cache',
+            backend='sqlite',
+            expire_after=3600  # Cache for 1 hour
+        )
+        
         self.session = None
         self.nse_base_url = "https://www.nseindia.com"
         self.bse_base_url = "https://api.bseindia.com"
         
-        # Headers to mimic browser requests
+        # Headers to mimic browser requests - more browser-like to avoid detection
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Referer': 'https://finance.yahoo.com/',
+            'Cache-Control': 'max-age=0',
+            'sec-ch-ua': '"Chromium";v="105", "Not)A;Brand";v="8"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
         }
     
     async def __aenter__(self):
@@ -69,8 +88,8 @@ class MarketDataFetcher:
         self, 
         symbol: str, 
         exchange: str = 'NSE',
-        start_date: datetime = None,
-        end_date: datetime = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
         interval: str = '1D'
     ) -> List[Dict]:
         """
@@ -98,7 +117,7 @@ class MarketDataFetcher:
             logger.error(f"Error fetching historical data for {symbol}: {e}")
             return []
     
-    async def _get_nse_historical_data(self, symbol: str, start_date: datetime, end_date: datetime, interval: str) -> List[Dict]:
+    async def _get_nse_historical_data(self, symbol: str, start_date: Optional[datetime], end_date: Optional[datetime], interval: str) -> List[Dict]:
         """Get NSE historical data using yfinance as fallback"""
         try:
             # Use yfinance for reliable historical data
@@ -107,11 +126,16 @@ class MarketDataFetcher:
             # Convert interval to yfinance format
             yf_interval = self._convert_interval_to_yf(interval)
             
-            # Fetch data
-            ticker = yf.Ticker(ticker_symbol)
+            # Set default dates if none provided
+            start = start_date.strftime('%Y-%m-%d') if start_date else None
+            end = end_date.strftime('%Y-%m-%d') if end_date else None
+            
+            # Fetch data with session for better reliability
+            session = requests.Session()
+            ticker = yf.Ticker(ticker_symbol, session=session)
             hist_data = ticker.history(
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
+                start=start,
+                end=end,
                 interval=yf_interval
             )
             
@@ -136,7 +160,7 @@ class MarketDataFetcher:
             logger.error(f"Error fetching NSE data for {symbol}: {e}")
             return []
     
-    async def _get_bse_historical_data(self, symbol: str, start_date: datetime, end_date: datetime, interval: str) -> List[Dict]:
+    async def _get_bse_historical_data(self, symbol: str, start_date: Optional[datetime], end_date: Optional[datetime], interval: str) -> List[Dict]:
         """Get BSE historical data using yfinance"""
         try:
             # Use yfinance for BSE data
@@ -144,10 +168,16 @@ class MarketDataFetcher:
             
             yf_interval = self._convert_interval_to_yf(interval)
             
-            ticker = yf.Ticker(ticker_symbol)
+            # Set default dates if none provided
+            start = start_date.strftime('%Y-%m-%d') if start_date else None
+            end = end_date.strftime('%Y-%m-%d') if end_date else None
+            
+            # Fetch data with session for better reliability
+            session = requests.Session()
+            ticker = yf.Ticker(ticker_symbol, session=session)
             hist_data = ticker.history(
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
+                start=start,
+                end=end,
                 interval=yf_interval
             )
             
@@ -211,20 +241,47 @@ class MarketDataFetcher:
     
     async def _get_nse_realtime_data(self, symbols: List[str]) -> AsyncGenerator[Dict, None]:
         """Simulate NSE real-time data (replace with actual API when available)"""
+        # Use a cache to store recent data and prevent frequent API calls
+        cache = {}
+        cache_expiry = {}
+        cache_duration = 60  # Cache duration in seconds
+        
+        # Initial delay between requests (will be increased if rate-limited)
+        base_delay = 5  # Start with 5 seconds between requests
+        max_delay = 30  # Maximum delay in seconds
+        current_delay = base_delay
+        
         while True:
             for symbol in symbols:
                 try:
-                    # Get latest price using yfinance
-                    ticker = yf.Ticker(f"{symbol}.NS")
-                    info = ticker.info
+                    current_time = datetime.now()
+                    
+                    # Use cached data if available and not expired
+                    if (symbol in cache and symbol in cache_expiry and 
+                        current_time < cache_expiry[symbol]):
+                        # Use cached data
+                        base_price = cache[symbol]
+                        logger.info(f"Using cached data for {symbol}")
+                    else:
+                        # Get latest price using yfinance with session for better reliability
+                        session = requests.Session()
+                        ticker = yf.Ticker(f"{symbol}.NS", session=session)
+                        info = ticker.info
+                        
+                        # Store in cache
+                        base_price = info.get('regularMarketPrice', 100.0)
+                        cache[symbol] = base_price
+                        cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                        
+                        # Reset delay if successful
+                        current_delay = base_delay
+                        logger.info(f"Successfully fetched new data for {symbol}")
                     
                     # Simulate real-time tick
-                    base_price = info.get('regularMarketPrice', 100.0)
-                    
                     tick_data = {
                         'symbol': symbol,
                         'exchange': 'NSE',
-                        'timestamp': datetime.now().strftime('%H:%M:%S'),
+                        'timestamp': current_time.strftime('%H:%M:%S'),
                         'ltp': round(base_price + random.uniform(-2, 2), 2),
                         'volume': random.randint(1000, 50000),
                         'change': round(random.uniform(-5, 5), 2),
@@ -232,27 +289,61 @@ class MarketDataFetcher:
                     }
                     
                     yield tick_data
-                    await asyncio.sleep(2)  # 2-second delay between ticks
+                    await asyncio.sleep(current_delay)  # Use dynamic delay between ticks
                     
                 except Exception as e:
-                    logger.error(f"Error getting real-time data for {symbol}: {e}")
-                    await asyncio.sleep(5)
+                    if "Too Many Requests" in str(e):
+                        # Implement exponential backoff for rate limiting
+                        current_delay = min(current_delay * 2, max_delay)
+                        logger.warning(f"Rate limited for {symbol}. Increasing delay to {current_delay}s")
+                    else:
+                        logger.error(f"Error getting real-time data for {symbol}: {e}")
+                    
+                    await asyncio.sleep(current_delay)
     
     async def _get_bse_realtime_data(self, symbols: List[str]) -> AsyncGenerator[Dict, None]:
         """Simulate BSE real-time data"""
+        # Use a cache to store recent data and prevent frequent API calls
+        cache = {}
+        cache_expiry = {}
+        cache_duration = 60  # Cache duration in seconds
+        
+        # Initial delay between requests (will be increased if rate-limited)
+        base_delay = 5  # Start with 5 seconds between requests
+        max_delay = 30  # Maximum delay in seconds
+        current_delay = base_delay
+        
         while True:
             for symbol in symbols:
                 try:
-                    # Get latest price using yfinance
-                    ticker = yf.Ticker(f"{symbol}.BO")
-                    info = ticker.info
+                    current_time = datetime.now()
                     
-                    base_price = info.get('regularMarketPrice', 100.0)
+                    # Use cached data if available and not expired
+                    if (symbol in cache and symbol in cache_expiry and 
+                        current_time < cache_expiry[symbol]):
+                        # Use cached data
+                        base_price = cache[symbol]
+                        logger.info(f"Using cached data for BSE {symbol}")
+                    else:
+                        # Get latest price using yfinance with session for better reliability
+                        session = requests.Session()
+                        ticker = yf.Ticker(f"{symbol}.BO", session=session)
+                        info = ticker.info
+                        
+                        # Store in cache
+                        base_price = info.get('regularMarketPrice', 100.0)
+                        cache[symbol] = base_price
+                        cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                        
+                        # Reset delay if successful
+                        current_delay = base_delay
+                        logger.info(f"Successfully fetched new data for BSE {symbol}")
                     
+                    # Simulate real-time tick
                     tick_data = {
                         'symbol': symbol,
                         'exchange': 'BSE',
-                        'timestamp': datetime.now().strftime('%H:%M:%S'),
+                        'timestamp': current_time.strftime('%H:%M:%S'),
                         'ltp': round(base_price + random.uniform(-2, 2), 2),
                         'volume': random.randint(1000, 50000),
                         'change': round(random.uniform(-5, 5), 2),
@@ -260,11 +351,17 @@ class MarketDataFetcher:
                     }
                     
                     yield tick_data
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(current_delay)  # Use dynamic delay between ticks
                     
                 except Exception as e:
-                    logger.error(f"Error getting BSE real-time data for {symbol}: {e}")
-                    await asyncio.sleep(5)
+                    if "Too Many Requests" in str(e):
+                        # Implement exponential backoff for rate limiting
+                        current_delay = min(current_delay * 2, max_delay)
+                        logger.warning(f"Rate limited for BSE {symbol}. Increasing delay to {current_delay}s")
+                    else:
+                        logger.error(f"Error getting BSE real-time data for {symbol}: {e}")
+                    
+                    await asyncio.sleep(current_delay)
     
     async def get_market_status(self, exchange: str = 'NSE') -> str:
         """
@@ -297,21 +394,76 @@ class MarketDataFetcher:
     async def get_symbol_info(self, symbol: str, exchange: str = 'NSE') -> Dict:
         """Get detailed information about a symbol"""
         try:
-            suffix = '.NS' if exchange.upper() == 'NSE' else '.BO'
-            ticker = yf.Ticker(f"{symbol}{suffix}")
-            info = ticker.info
+            # Use a static cache for symbol info with 24-hour expiry
+            cache_key = f"{symbol}_{exchange}"
             
-            return {
-                'symbol': symbol,
-                'exchange': exchange,
-                'company_name': info.get('longName', 'N/A'),
-                'sector': info.get('sector', 'N/A'),
-                'market_cap': info.get('marketCap', 'N/A'),
-                'pe_ratio': info.get('trailingPE', 'N/A'),
-                '52_week_high': info.get('fiftyTwoWeekHigh', 'N/A'),
-                '52_week_low': info.get('fiftyTwoWeekLow', 'N/A'),
-                'current_price': info.get('regularMarketPrice', 'N/A')
-            }
+            # Check if we have a file-based cache for this symbol
+            cache_file = f".cache_{cache_key}.json"
+            
+            try:
+                # Try to read from cache
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                
+                # Check if cache is still valid (less than 24 hours old)
+                cache_time = datetime.fromisoformat(cached_data.get('timestamp', '2020-01-01'))
+                if datetime.now() - cache_time < timedelta(hours=24):
+                    logger.info(f"Using cached info for {symbol} on {exchange}")
+                    return cached_data.get('data', {})
+            except (FileNotFoundError, json.JSONDecodeError):
+                # Cache doesn't exist or is invalid
+                pass
+                
+            # If not in cache or cache expired, fetch new data
+            suffix = '.NS' if exchange.upper() == 'NSE' else '.BO'
+            
+            # Use session for better handling of rate limits
+            session = requests.Session()
+            ticker = yf.Ticker(f"{symbol}{suffix}", session=session)
+            
+            # Implement retry with exponential backoff
+            max_retries = 3
+            retry_delay = 5
+            
+            for retry in range(max_retries):
+                try:
+                    info = ticker.info
+                    
+                    # Create result
+                    result = {
+                        'symbol': symbol,
+                        'exchange': exchange,
+                        'company_name': info.get('longName', 'N/A'),
+                        'sector': info.get('sector', 'N/A'),
+                        'market_cap': info.get('marketCap', 'N/A'),
+                        'pe_ratio': info.get('trailingPE', 'N/A'),
+                        '52_week_high': info.get('fiftyTwoWeekHigh', 'N/A'),
+                        '52_week_low': info.get('fiftyTwoWeekLow', 'N/A'),
+                        'current_price': info.get('regularMarketPrice', 'N/A')
+                    }
+                    
+                    # Cache the result
+                    with open(cache_file, 'w') as f:
+                        json.dump({
+                            'timestamp': datetime.now().isoformat(),
+                            'data': result
+                        }, f)
+                        
+                    return result
+                    
+                except Exception as e:
+                    if "Too Many Requests" in str(e):
+                        if retry < max_retries - 1:
+                            wait_time = retry_delay * (2 ** retry)
+                            logger.warning(f"Rate limited for {symbol}, retrying in {wait_time}s")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            raise
+                    else:
+                        raise
+            
+            # Fallback return in case all retries fail
+            return {}
             
         except Exception as e:
             logger.error(f"Error getting symbol info for {symbol}: {e}")
