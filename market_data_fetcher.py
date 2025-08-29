@@ -1,8 +1,3 @@
-"""
-Market Data Fetcher for NSE & BSE
-Handles both historical and real-time tick data
-"""
-
 import asyncio
 import aiohttp
 import pandas as pd
@@ -41,7 +36,6 @@ class MarketDataFetcher:
         # Create cache directory if it doesn't exist
         os.makedirs('.cache', exist_ok=True)
         
-        # Install the requests cache
         # This will cache all HTTP requests to reduce rate limiting issues
         requests_cache.install_cache(
             '.cache/market_data_cache',
@@ -71,6 +65,7 @@ class MarketDataFetcher:
     async def __aenter__(self):
         """Async context manager entry"""
         self.session = aiohttp.ClientSession(headers=self.headers)
+        #print('Session created:', self.session)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -364,32 +359,20 @@ class MarketDataFetcher:
                     await asyncio.sleep(current_delay)
     
     async def get_market_status(self, exchange: str = 'NSE') -> str:
-        """
-        Get current market status
+        current_time = datetime.now().time()
         
-        Args:
-            exchange: 'NSE' or 'BSE'
+        # Market hours: 9:15 AM to 3:30 PM IST (Monday to Friday)
+        market_open = datetime.strptime("09:15", "%H:%M").time()
+        market_close = datetime.strptime("15:30", "%H:%M").time()
         
-        Returns:
-            Market status string
-        """
-        try:
-            current_time = datetime.now().time()
-            
-            # Market hours: 9:15 AM to 3:30 PM IST (Monday to Friday)
-            market_open = datetime.strptime("09:15", "%H:%M").time()
-            market_close = datetime.strptime("15:30", "%H:%M").time()
-            
-            is_weekday = datetime.now().weekday() < 5  # Monday = 0, Sunday = 6
-            
-            if is_weekday and market_open <= current_time <= market_close:
-                return f"{exchange} Market is OPEN"
-            else:
-                return f"{exchange} Market is CLOSED"
-                
-        except Exception as e:
-            logger.error(f"Error checking market status: {e}")
-            return f"{exchange} Market status UNKNOWN"
+        is_weekday = datetime.now().weekday() < 5  # Monday = 0, Sunday = 6
+        
+        if is_weekday and market_open <= current_time <= market_close:
+            return f"{exchange} Market is OPEN"
+        else:
+            return f"{exchange} Market is CLOSED"
+    
+
     
     async def get_symbol_info(self, symbol: str, exchange: str = 'NSE') -> Dict:
         """Get detailed information about a symbol"""

@@ -1,5 +1,6 @@
 __pycache__/
-
+data/
+.cache/
 
 # Dependency directories
 node_modules/

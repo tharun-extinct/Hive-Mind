@@ -13,7 +13,7 @@ async def example_historical_analysis():
     print("=== Historical Data Analysis Example ===\n")
     
     fetcher = MarketDataFetcher()
-    processor = DataProcessor()
+    processed_data = DataProcessor()
     
     # Fetch historical data for RELIANCE
     symbol = 'RELIANCE'
@@ -30,12 +30,14 @@ async def example_historical_analysis():
         interval='1D'
     )
     
+    #print(type(data), f'\n {data}')
+
     if data:
         print(f"Retrieved {len(data)} records")
         
         # Add technical indicators
         print("Calculating technical indicators...")
-        data_with_indicators = processor.calculate_technical_indicators(data)
+        data_with_indicators = processed_data.technical_analysis(data)
         
         # Get latest data with indicators
         latest = data_with_indicators[-1]
@@ -45,14 +47,14 @@ async def example_historical_analysis():
         print(f"  SMA(20): ₹{latest.get('sma_20', 'N/A'):.2f}" if latest.get('sma_20') else "  SMA(20): N/A")
         
         # Detect patterns
-        patterns = processor.detect_patterns(data)
+        patterns = processed_data.detect_patterns(data)
         print(f"\nDetected patterns: {patterns.get('patterns', [])}")
         
         # Save data
-        processor.save_data_to_csv(data_with_indicators, f"{symbol}_historical.csv")
+        processed_data.save_data_to_csv(data_with_indicators, f"{symbol}_historical.csv")
         
         # Get market summary
-        summary = processor.get_market_summary(data)
+        summary = processed_data.get_market_summary(data)
         print(f"\nMarket Summary:")
         print(f"  Records: {summary['total_records']}")
         print(f"  Price Range: ₹{summary['price_stats']['low']:.2f} - ₹{summary['price_stats']['high']:.2f}")
@@ -150,7 +152,7 @@ async def example_portfolio_tracking():
     print("\n=== Portfolio Tracking Example ===\n")
     
     fetcher = MarketDataFetcher()
-    processor = DataProcessor()
+    processed_data = DataProcessor()
     
     # Sample portfolio
     portfolio = [
@@ -174,21 +176,27 @@ async def example_portfolio_tracking():
             'current_price': current_price,
             'company_name': symbol_info.get('company_name', 'N/A')
         }
+
+        print(type(holding_with_price), f'\n {holding_with_price}')
+
         portfolio_with_prices.append(holding_with_price)
         
         value = holding['quantity'] * current_price
-        print(f"{holding['symbol']:8} | {holding['quantity']:3} shares | ₹{current_price:8.2f} | {processor.format_currency(value)}")
+        print(f"{holding['symbol']:8} | {holding['quantity']:3} shares | ₹{current_price:8.2f} | {processed_data.format_currency(value)}")
     
     # Calculate portfolio metrics
-    metrics = processor.calculate_portfolio_metrics(portfolio_with_prices)
+    metrics = processed_data.calculate_portfolio_metrics(portfolio_with_prices)
     
     print(f"\nPortfolio Summary:")
-    print(f"Total Value: {processor.format_currency(metrics['total_value'])}")
+    print(f"Total Value: {processed_data.format_currency(metrics['total_value'])}")
     print(f"Total Holdings: {metrics['total_holdings']}")
     
     print(f"\nHoldings Breakdown:")
     for breakdown in metrics['holdings_breakdown']:
-        print(f"  {breakdown['symbol']:8} | {processor.format_currency(breakdown['value'])} ({breakdown['percentage']:.1f}%)")
+        print(f"  {breakdown['symbol']:8} | {processed_data.format_currency(breakdown['value'])} ({breakdown['percentage']:.1f}%)")
+
+
+
 
 async def main():
     """Run all examples"""
@@ -200,8 +208,8 @@ async def main():
         ("Portfolio Tracking", example_portfolio_tracking),
         ("Real-time Monitoring", example_realtime_monitoring)
     ]
-    
-    print("Available examples:")
+
+    print("Available analyses:")
     for i, (name, _) in enumerate(examples, 1):
         print(f"{i}. {name}")
     

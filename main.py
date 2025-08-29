@@ -19,7 +19,7 @@ async def main():
     fetcher = MarketDataFetcher()
     
     # Example symbols
-    nse_symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK']
+    nse_symbols = ['RELIANCE']               #, 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK']
     bse_symbols = ['500325', '532540', '500209', '500180', '532174']  # BSE codes
     
     print("=== NSE & BSE Tick Data Fetcher ===\n")
@@ -52,6 +52,8 @@ async def main():
         else:
             print("Invalid choice. Please try again.")
 
+
+
 async def handle_historical_nse(fetcher, symbols):
     """Handle historical NSE data fetching"""
     print(f"\nFetching historical data for NSE symbols: {symbols}")
@@ -79,6 +81,7 @@ async def handle_historical_nse(fetcher, symbols):
                 
         except Exception as e:
             logger.error(f"Error fetching data for {symbol}: {e}")
+
 
 # BSE
 async def handle_historical_bse(fetcher, symbols):
@@ -108,6 +111,8 @@ async def handle_historical_bse(fetcher, symbols):
         except Exception as e:
             logger.error(f"Error fetching BSE data for {symbol}: {e}")
 
+
+
 async def handle_realtime_nse(fetcher, symbols):
     """Handle real-time NSE data streaming"""
     print(f"\nStarting real-time data stream for NSE symbols: {symbols[:3]}")
@@ -117,11 +122,10 @@ async def handle_realtime_nse(fetcher, symbols):
         async for tick_data in fetcher.get_realtime_data(symbols[:3], 'NSE'):
             print(f"[{tick_data['timestamp']}] {tick_data['symbol']}: "
                   f"LTP={tick_data['ltp']}, Volume={tick_data['volume']}")
-            
-    except KeyboardInterrupt:
-        print("\nReal-time stream stopped by user")
     except Exception as e:
         logger.error(f"Error in real-time stream: {e}")
+
+
 
 async def handle_realtime_bse(fetcher, symbols):
     """Handle real-time BSE data streaming"""
@@ -137,6 +141,8 @@ async def handle_realtime_bse(fetcher, symbols):
         print("\nReal-time stream stopped by user")
     except Exception as e:
         logger.error(f"Error in BSE real-time stream: {e}")
+
+
 
 async def handle_market_status(fetcher):
     """Handle market status check"""

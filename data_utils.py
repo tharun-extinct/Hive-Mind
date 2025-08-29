@@ -13,7 +13,7 @@ class DataProcessor:
     """Class for processing and analyzing market data"""
     
     @staticmethod
-    def calculate_technical_indicators(data: List[Dict]) -> List[Dict]:
+    def technical_analysis(data: List[Dict]) -> List[Dict]:
         """
         Calculate technical indicators for the given data
         
