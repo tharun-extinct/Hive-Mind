@@ -31,10 +31,11 @@ async def main():
         print("2. Get Historical Data (BSE)")
         print("3. Start Real-time Data Stream (NSE)")
         print("4. Start Real-time Data Stream (BSE)")
-        print("5. Get Current Market Status")
-        print("6. Exit")
+        print("5. Download Stock Data (Custom Timeframe & Timeline)")
+        print("6. Get Current Market Status")
+        print("7. Exit")
         
-        choice = input("\nEnter your choice (1-6): ").strip()
+        choice = input("\nEnter your choice (1-7): ").strip()
         
         if choice == '1':
             await handle_historical_nse(fetcher, nse_symbols)
@@ -45,8 +46,10 @@ async def main():
         elif choice == '4':
             await handle_realtime_bse(fetcher, bse_symbols)
         elif choice == '5':
-            await handle_market_status(fetcher)
+            await handle_download_stock_data(fetcher)
         elif choice == '6':
+            await handle_market_status(fetcher)
+        elif choice == '7':
             print("Exiting...")
             break
         else:
@@ -143,6 +146,128 @@ async def handle_realtime_bse(fetcher, symbols):
         logger.error(f"Error in BSE real-time stream: {e}")
 
 
+
+async def handle_download_stock_data(fetcher):
+    """Handle custom stock data download with selectable timeframe and timeline"""
+    print("\n=== Download Stock Data ===")
+    
+    # Get user inputs
+    symbol = input("Enter stock symbol (e.g., RELIANCE, TCS): ").strip().upper()
+    if not symbol:
+        print("Invalid symbol. Please try again.")
+        return
+    
+    # Exchange selection
+    print("\nSelect Exchange:")
+    print("1. NSE")
+    print("2. BSE")
+    exchange_choice = input("Enter choice (1-2): ").strip()
+    
+    if exchange_choice == '1':
+        exchange = 'NSE'
+    elif exchange_choice == '2':
+        exchange = 'BSE'
+    else:
+        print("Invalid choice. Using NSE as default.")
+        exchange = 'NSE'
+    
+    # Timeframe selection
+    print("\nSelect Timeframe (Data Interval):")
+    print("1. 1 minute (1m)")
+    print("2. 5 minutes (5m)")
+    print("3. 15 minutes (15m)")
+    print("4. 30 minutes (30m)")
+    print("5. 1 hour (1h)")
+    print("6. 1 day (1d)")
+    print("7. 1 week (1wk)")
+    print("8. 1 month (1mo)")
+    
+    timeframe_choice = input("Enter choice (1-8): ").strip()
+    timeframe_map = {
+        '1': '1m', '2': '5m', '3': '15m', '4': '30m',
+        '5': '1h', '6': '1d', '7': '1wk', '8': '1mo'
+    }
+    timeframe = timeframe_map.get(timeframe_choice, '1d')
+    
+    # Timeline selection
+    print("\nSelect Timeline (Data Period):")
+    print("1. 1 day (1d)")
+    print("2. 5 days (5d)")
+    print("3. 1 month (1mo)")
+    print("4. 3 months (3mo)")
+    print("5. 6 months (6mo)")
+    print("6. 1 year (1y)")
+    print("7. 2 years (2y)")
+    print("8. 5 years (5y)")
+    print("9. 10 years (10y)")
+    print("10. Year to date (ytd)")
+    print("11. Max available (max)")
+    
+    timeline_choice = input("Enter choice (1-11): ").strip()
+    timeline_map = {
+        '1': '1d', '2': '5d', '3': '1mo', '4': '3mo', '5': '6mo',
+        '6': '1y', '7': '2y', '8': '5y', '9': '10y', '10': 'ytd', '11': 'max'
+    }
+    timeline = timeline_map.get(timeline_choice, '1y')
+    
+    # File format selection
+    print("\nSelect File Format:")
+    print("1. CSV")
+    print("2. JSON")
+    print("3. Excel")
+    
+    format_choice = input("Enter choice (1-3): ").strip()
+    format_map = {'1': 'csv', '2': 'json', '3': 'excel'}
+    file_format = format_map.get(format_choice, 'csv')
+    
+    # Confirm download
+    print(f"\n📋 Download Summary:")
+    print(f"   Symbol: {symbol}")
+    print(f"   Exchange: {exchange}")
+    print(f"   Timeframe: {timeframe}")
+    print(f"   Timeline: {timeline}")
+    print(f"   Format: {file_format.upper()}")
+    
+    confirm = input("\nProceed with download? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("Download cancelled.")
+        return
+    
+    try:
+        print(f"\n🔄 Downloading {symbol} data...")
+        
+        # Download the data
+        data = await fetcher.download_stock_data(
+            symbol=symbol,
+            exchange=exchange,
+            timeframe=timeframe,
+            timeline=timeline,
+            save_to_file=True,
+            file_format=file_format
+        )
+        
+        if not data.empty:
+            print(f"\n✅ Download completed successfully!")
+            print(f"   Records downloaded: {len(data)}")
+            print(f"   Date range: {data['Date'].min().strftime('%Y-%m-%d')} to {data['Date'].max().strftime('%Y-%m-%d')}")
+            
+            # Show sample data
+            print(f"\n📊 Sample data (first 5 records):")
+            print(data.head().to_string(index=False))
+            
+            # Show summary statistics
+            print(f"\n📈 Summary Statistics:")
+            print(f"   Highest: {data['High'].max():.2f}")
+            print(f"   Lowest: {data['Low'].min():.2f}")
+            print(f"   Latest Close: {data['Close'].iloc[-1]:.2f}")
+            print(f"   Average Volume: {data['Volume'].mean():.0f}")
+            
+        else:
+            print(f"❌ No data found for {symbol} on {exchange}")
+            
+    except Exception as e:
+        logger.error(f"Error downloading data for {symbol}: {e}")
+        print(f"❌ Error downloading data: {e}")
 
 async def handle_market_status(fetcher):
     """Handle market status check"""

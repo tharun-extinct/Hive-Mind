@@ -374,6 +374,123 @@ class MarketDataFetcher:
     
 
     
+    async def download_stock_data(self, symbol: str, exchange: str = 'NSE', 
+                                timeframe: str = '1D', timeline: str = '1Y',
+                                save_to_file: bool = True, file_format: str = 'csv') -> pd.DataFrame:
+        """
+        Download stock data with selectable timeframe and timeline
+        
+        Args:
+            symbol: Stock symbol (e.g., 'RELIANCE', 'TCS')
+            exchange: 'NSE' or 'BSE'
+            timeframe: Data interval ('1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo')
+            timeline: Data period ('1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max')
+            save_to_file: Whether to save data to file
+            file_format: File format ('csv', 'json', 'excel')
+        
+        Returns:
+            DataFrame with stock data
+        """
+        try:
+            logger.info(f"Downloading {symbol} data from {exchange} - Timeframe: {timeframe}, Timeline: {timeline}")
+            
+            # Determine the correct suffix
+            suffix = '.NS' if exchange.upper() == 'NSE' else '.BO'
+            ticker_symbol = f"{symbol}{suffix}"
+            
+            # Use session for better reliability
+            session = requests.Session()
+            ticker = yf.Ticker(ticker_symbol, session=session)
+            
+            # Convert timeline to valid period
+            valid_periods = ['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max']
+            period = timeline.lower() if timeline.lower() in valid_periods else '1y'
+            
+            # Convert timeframe to valid interval
+            valid_intervals = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo']
+            interval = timeframe.lower() if timeframe.lower() in valid_intervals else '1d'
+            
+            # Download data with retry mechanism
+            max_retries = 3
+            retry_delay = 2
+            
+            for retry in range(max_retries):
+                try:
+                    # Fetch historical data
+                    hist_data = ticker.history(period=period, interval=interval)
+                    
+                    if hist_data.empty:
+                        logger.warning(f"No data found for {symbol} on {exchange}")
+                        return pd.DataFrame()
+                    
+                    # Add metadata columns
+                    hist_data['Symbol'] = symbol
+                    hist_data['Exchange'] = exchange.upper()
+                    hist_data['Timeframe'] = timeframe
+                    hist_data['Timeline'] = timeline
+                    
+                    # Reset index to make Date a column
+                    hist_data.reset_index(inplace=True)
+                    
+                    # Round numerical values
+                    numerical_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close']
+                    for col in numerical_cols:
+                        if col in hist_data.columns:
+                            hist_data[col] = hist_data[col].round(2)
+                    
+                    logger.info(f"Successfully downloaded {len(hist_data)} records for {symbol}")
+                    
+                    # Save to file if requested
+                    if save_to_file:
+                        await self._save_data_to_file(hist_data, symbol, exchange, timeframe, timeline, file_format)
+                    
+                    return hist_data
+                    
+                except Exception as e:
+                    if "Too Many Requests" in str(e) and retry < max_retries - 1:
+                        wait_time = retry_delay * (2 ** retry)
+                        logger.warning(f"Rate limited for {symbol}, retrying in {wait_time}s")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        raise
+            
+            return pd.DataFrame()
+            
+        except Exception as e:
+            logger.error(f"Error downloading data for {symbol}: {e}")
+            return pd.DataFrame()
+    
+    async def _save_data_to_file(self, data: pd.DataFrame, symbol: str, exchange: str, 
+                               timeframe: str, timeline: str, file_format: str):
+        """Save downloaded data to file"""
+        try:
+            # Create data directory if it doesn't exist
+            os.makedirs('data', exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"data/{symbol}_{exchange}_{timeframe}_{timeline}_{timestamp}"
+            
+            if file_format.lower() == 'csv':
+                filepath = f"{filename}.csv"
+                data.to_csv(filepath, index=False)
+            elif file_format.lower() == 'json':
+                filepath = f"{filename}.json"
+                data.to_json(filepath, orient='records', date_format='iso', indent=2)
+            elif file_format.lower() == 'excel':
+                filepath = f"{filename}.xlsx"
+                data.to_excel(filepath, index=False, sheet_name=f"{symbol}_{exchange}")
+            else:
+                # Default to CSV
+                filepath = f"{filename}.csv"
+                data.to_csv(filepath, index=False)
+            
+            logger.info(f"Data saved to: {filepath}")
+            print(f"📁 Data saved to: {filepath}")
+            
+        except Exception as e:
+            logger.error(f"Error saving data to file: {e}")
+
     async def get_symbol_info(self, symbol: str, exchange: str = 'NSE') -> Dict:
         """Get detailed information about a symbol"""
         try:
