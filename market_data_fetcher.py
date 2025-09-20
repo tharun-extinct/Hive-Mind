@@ -235,128 +235,232 @@ class MarketDataFetcher:
             logger.error(f"Error in real-time data stream: {e}")
     
     async def _get_nse_realtime_data(self, symbols: List[str]) -> AsyncGenerator[Dict, None]:
-        """Simulate NSE real-time data (replace with actual API when available)"""
-        # Use a cache to store recent data and prevent frequent API calls
+        """Enhanced NSE real-time data with minimal API calls and robust rate limiting"""
+        # Enhanced caching with longer duration
         cache = {}
         cache_expiry = {}
-        cache_duration = 60  # Cache duration in seconds
+        cache_duration = 300  # Cache for 5 minutes (much longer)
         
-        # Initial delay between requests (will be increased if rate-limited)
-        base_delay = 5  # Start with 5 seconds between requests
-        max_delay = 30  # Maximum delay in seconds
+        # Rate limiting controls
+        base_delay = 10  # Start with 10 seconds between requests (increased)
+        max_delay = 120  # Maximum delay in seconds (increased)
         current_delay = base_delay
+        tick_delay = 3  # Delay between ticks regardless of API calls
+        
+        # Track last API call time to prevent too frequent requests
+        last_api_call = {}
+        min_api_interval = 30  # Minimum 30 seconds between API calls for same symbol
+        
+        # Initialize base prices from historical data once
+        logger.info("Initializing base prices for symbols...")
+        for symbol in symbols:
+            try:
+                # Get initial price using historical data (less rate-limited)
+                ticker = yf.Ticker(f"{symbol}.NS")
+                hist = ticker.history(period="1d", interval="1d")
+                if not hist.empty:
+                    base_price = float(hist['Close'].iloc[-1])
+                    cache[symbol] = base_price
+                    cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+                    last_api_call[symbol] = datetime.now()
+                    logger.info(f"Initialized {symbol} with price: {base_price}")
+                else:
+                    # Fallback price if no data
+                    cache[symbol] = 100.0
+                    cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+                await asyncio.sleep(2)  # Delay between initialization calls
+            except Exception as e:
+                logger.warning(f"Could not initialize {symbol}, using fallback: {e}")
+                cache[symbol] = 100.0
+                cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+        
+        logger.info("Starting real-time data simulation...")
         
         while True:
             for symbol in symbols:
                 try:
                     current_time = datetime.now()
                     
-                    # Use cached data if available and not expired
-                    if (symbol in cache and symbol in cache_expiry and 
-                        current_time < cache_expiry[symbol]):
-                        # Use cached data
-                        base_price = cache[symbol]
-                        logger.info(f"Using cached data for {symbol}")
-                    else:
-                        # Get latest price using yfinance with session for better reliability
-                        session = requests.Session()
-                        ticker = yf.Ticker(f"{symbol}.NS", session=session)
-                        info = ticker.info
-                        
-                        # Store in cache
-                        base_price = info.get('regularMarketPrice', 100.0)
-                        cache[symbol] = base_price
-                        cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
-                        
-                        # Reset delay if successful
-                        current_delay = base_delay
-                        logger.info(f"Successfully fetched new data for {symbol}")
+                    # Check if we need to refresh data
+                    should_refresh = (
+                        symbol not in cache or 
+                        symbol not in cache_expiry or 
+                        current_time > cache_expiry[symbol]
+                    )
                     
-                    # Simulate real-time tick
+                    # Additional check: don't call API too frequently for same symbol
+                    if should_refresh and symbol in last_api_call:
+                        time_since_last_call = (current_time - last_api_call[symbol]).total_seconds()
+                        if time_since_last_call < min_api_interval:
+                            should_refresh = False
+                            logger.debug(f"Skipping API call for {symbol}, too soon ({time_since_last_call:.1f}s)")
+                    
+                    if should_refresh:
+                        try:
+                            logger.info(f"Refreshing data for {symbol}")
+                            
+                            # Use historical data instead of info (more reliable)
+                            ticker = yf.Ticker(f"{symbol}.NS")
+                            hist = ticker.history(period="1d", interval="5m")
+                            
+                            if not hist.empty:
+                                base_price = float(hist['Close'].iloc[-1])
+                                cache[symbol] = base_price
+                                cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                                last_api_call[symbol] = current_time
+                                current_delay = base_delay  # Reset delay on success
+                                logger.info(f"Successfully refreshed {symbol}: {base_price}")
+                            else:
+                                # Keep old cached value if no new data
+                                cache_expiry[symbol] = current_time + timedelta(seconds=60)
+                                logger.warning(f"No new data for {symbol}, extending cache")
+                                
+                        except Exception as api_error:
+                            if "Too Many Requests" in str(api_error) or "429" in str(api_error):
+                                # Exponential backoff for rate limiting
+                                current_delay = min(current_delay * 2, max_delay)
+                                cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                                logger.warning(f"Rate limited for {symbol}. Increasing delay to {current_delay}s")
+                                await asyncio.sleep(current_delay)
+                                continue
+                            else:
+                                # For other errors, extend cache and continue
+                                cache_expiry[symbol] = current_time + timedelta(seconds=300)
+                                logger.error(f"API error for {symbol}: {api_error}")
+                    
+                    # Always generate tick data (even with cached price)
+                    base_price = cache.get(symbol, 100.0)
+                    
+                    # Add realistic price movement
+                    price_change = random.uniform(-0.5, 0.5)  # Smaller realistic movements
+                    current_price = max(0.01, base_price + price_change)  # Ensure positive price
+                    
                     tick_data = {
                         'symbol': symbol,
                         'exchange': 'NSE',
                         'timestamp': current_time.strftime('%H:%M:%S'),
-                        'ltp': round(base_price + random.uniform(-2, 2), 2),
+                        'ltp': round(current_price, 2),
                         'volume': random.randint(1000, 50000),
-                        'change': round(random.uniform(-5, 5), 2),
-                        'change_percent': round(random.uniform(-2, 2), 2)
+                        'change': round(price_change, 2),
+                        'change_percent': round((price_change / base_price) * 100, 2) if base_price > 0 else 0
                     }
                     
                     yield tick_data
-                    await asyncio.sleep(current_delay)  # Use dynamic delay between ticks
+                    await asyncio.sleep(tick_delay)  # Fixed delay between ticks
                     
                 except Exception as e:
-                    if "Too Many Requests" in str(e):
-                        # Implement exponential backoff for rate limiting
-                        current_delay = min(current_delay * 2, max_delay)
-                        logger.warning(f"Rate limited for {symbol}. Increasing delay to {current_delay}s")
-                    else:
-                        logger.error(f"Error getting real-time data for {symbol}: {e}")
-                    
-                    await asyncio.sleep(current_delay)
+                    logger.error(f"Unexpected error in real-time data for {symbol}: {e}")
+                    await asyncio.sleep(tick_delay)
     
     async def _get_bse_realtime_data(self, symbols: List[str]) -> AsyncGenerator[Dict, None]:
-        """Simulate BSE real-time data"""
-        # Use a cache to store recent data and prevent frequent API calls
+        """Enhanced BSE real-time data with minimal API calls and robust rate limiting"""
+        # Enhanced caching with longer duration
         cache = {}
         cache_expiry = {}
-        cache_duration = 60  # Cache duration in seconds
+        cache_duration = 300  # Cache for 5 minutes
         
-        # Initial delay between requests (will be increased if rate-limited)
-        base_delay = 5  # Start with 5 seconds between requests
-        max_delay = 30  # Maximum delay in seconds
+        # Rate limiting controls
+        base_delay = 10  # Start with 10 seconds between requests
+        max_delay = 120  # Maximum delay in seconds
         current_delay = base_delay
+        tick_delay = 3  # Delay between ticks
+        
+        # Track last API call time
+        last_api_call = {}
+        min_api_interval = 30  # Minimum 30 seconds between API calls
+        
+        # Initialize base prices from historical data once
+        logger.info("Initializing BSE base prices for symbols...")
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(f"{symbol}.BO")
+                hist = ticker.history(period="1d", interval="1d")
+                if not hist.empty:
+                    base_price = float(hist['Close'].iloc[-1])
+                    cache[symbol] = base_price
+                    cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+                    last_api_call[symbol] = datetime.now()
+                    logger.info(f"Initialized BSE {symbol} with price: {base_price}")
+                else:
+                    cache[symbol] = 100.0
+                    cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning(f"Could not initialize BSE {symbol}, using fallback: {e}")
+                cache[symbol] = 100.0
+                cache_expiry[symbol] = datetime.now() + timedelta(seconds=cache_duration)
+        
+        logger.info("Starting BSE real-time data simulation...")
         
         while True:
             for symbol in symbols:
                 try:
                     current_time = datetime.now()
                     
-                    # Use cached data if available and not expired
-                    if (symbol in cache and symbol in cache_expiry and 
-                        current_time < cache_expiry[symbol]):
-                        # Use cached data
-                        base_price = cache[symbol]
-                        logger.info(f"Using cached data for BSE {symbol}")
-                    else:
-                        # Get latest price using yfinance with session for better reliability
-                        session = requests.Session()
-                        ticker = yf.Ticker(f"{symbol}.BO", session=session)
-                        info = ticker.info
-                        
-                        # Store in cache
-                        base_price = info.get('regularMarketPrice', 100.0)
-                        cache[symbol] = base_price
-                        cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
-                        
-                        # Reset delay if successful
-                        current_delay = base_delay
-                        logger.info(f"Successfully fetched new data for BSE {symbol}")
+                    # Check if we need to refresh data
+                    should_refresh = (
+                        symbol not in cache or 
+                        symbol not in cache_expiry or 
+                        current_time > cache_expiry[symbol]
+                    )
                     
-                    # Simulate real-time tick
+                    # Don't call API too frequently
+                    if should_refresh and symbol in last_api_call:
+                        time_since_last_call = (current_time - last_api_call[symbol]).total_seconds()
+                        if time_since_last_call < min_api_interval:
+                            should_refresh = False
+                            logger.debug(f"Skipping BSE API call for {symbol}, too soon")
+                    
+                    if should_refresh:
+                        try:
+                            logger.info(f"Refreshing BSE data for {symbol}")
+                            
+                            ticker = yf.Ticker(f"{symbol}.BO")
+                            hist = ticker.history(period="1d", interval="5m")
+                            
+                            if not hist.empty:
+                                base_price = float(hist['Close'].iloc[-1])
+                                cache[symbol] = base_price
+                                cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                                last_api_call[symbol] = current_time
+                                current_delay = base_delay
+                                logger.info(f"Successfully refreshed BSE {symbol}: {base_price}")
+                            else:
+                                cache_expiry[symbol] = current_time + timedelta(seconds=60)
+                                logger.warning(f"No new BSE data for {symbol}, extending cache")
+                                
+                        except Exception as api_error:
+                            if "Too Many Requests" in str(api_error) or "429" in str(api_error):
+                                current_delay = min(current_delay * 2, max_delay)
+                                cache_expiry[symbol] = current_time + timedelta(seconds=cache_duration)
+                                logger.warning(f"BSE rate limited for {symbol}. Increasing delay to {current_delay}s")
+                                await asyncio.sleep(current_delay)
+                                continue
+                            else:
+                                cache_expiry[symbol] = current_time + timedelta(seconds=300)
+                                logger.error(f"BSE API error for {symbol}: {api_error}")
+                    
+                    # Generate tick data
+                    base_price = cache.get(symbol, 100.0)
+                    price_change = random.uniform(-0.5, 0.5)
+                    current_price = max(0.01, base_price + price_change)
+                    
                     tick_data = {
                         'symbol': symbol,
                         'exchange': 'BSE',
                         'timestamp': current_time.strftime('%H:%M:%S'),
-                        'ltp': round(base_price + random.uniform(-2, 2), 2),
+                        'ltp': round(current_price, 2),
                         'volume': random.randint(1000, 50000),
-                        'change': round(random.uniform(-5, 5), 2),
-                        'change_percent': round(random.uniform(-2, 2), 2)
+                        'change': round(price_change, 2),
+                        'change_percent': round((price_change / base_price) * 100, 2) if base_price > 0 else 0
                     }
                     
                     yield tick_data
-                    await asyncio.sleep(current_delay)  # Use dynamic delay between ticks
+                    await asyncio.sleep(tick_delay)
                     
                 except Exception as e:
-                    if "Too Many Requests" in str(e):
-                        # Implement exponential backoff for rate limiting
-                        current_delay = min(current_delay * 2, max_delay)
-                        logger.warning(f"Rate limited for BSE {symbol}. Increasing delay to {current_delay}s")
-                    else:
-                        logger.error(f"Error getting BSE real-time data for {symbol}: {e}")
-                    
-                    await asyncio.sleep(current_delay)
+                    logger.error(f"Unexpected error in BSE real-time data for {symbol}: {e}")
+                    await asyncio.sleep(tick_delay)
     
     async def get_market_status(self, exchange: str = 'NSE') -> str:
         current_time = datetime.now().time()
@@ -569,7 +673,60 @@ class MarketDataFetcher:
             logger.error(f"Error getting symbol info for {symbol}: {e}")
             return {}
     
+    def clear_all_caches(self):
+        """Clear all caches to force fresh data retrieval"""
+        try:
+            # Clear HTTP request cache
+            import requests_cache
+            requests_cache.clear()
+            logger.info("Cleared HTTP request cache")
+            
+            # Clear file-based symbol caches
+            import glob
+            cache_files = glob.glob(".cache_*.json")
+            for file in cache_files:
+                os.remove(file)
+                logger.info(f"Removed cache file: {file}")
+            
+            logger.info("All caches cleared successfully")
+            
+        except Exception as e:
+            logger.error(f"Error clearing caches: {e}")
+    
+    def get_cache_status(self):
+        """Get information about current cache status"""
+        try:
+            # Check HTTP cache
+            cache_info = {"http_cache": "Unknown", "file_caches": []}
+            
+            # Check for cache database
+            cache_db_path = ".cache/market_data_cache.sqlite"
+            if os.path.exists(cache_db_path):
+                cache_info["http_cache"] = f"Active (DB size: {os.path.getsize(cache_db_path)} bytes)"
+            else:
+                cache_info["http_cache"] = "Not found"
+            
+            # Check file caches
+            import glob
+            cache_files = glob.glob(".cache_*.json")
+            file_cache_list = []
+            for file in cache_files:
+                file_size = os.path.getsize(file)
+                file_time = datetime.fromtimestamp(os.path.getmtime(file))
+                file_cache_list.append({
+                    "file": file,
+                    "size": file_size,
+                    "modified": file_time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            
+            cache_info["file_caches"] = file_cache_list
+            return cache_info
+            
+        except Exception as e:
+            logger.error(f"Error getting cache status: {e}")
+            return {"error": str(e)}
+    
     def __del__(self):
         """Cleanup when object is destroyed"""
-        if self.session and not self.session.closed:
+        if hasattr(self, 'session') and self.session and not self.session.closed:
             asyncio.create_task(self.session.close())
